@@ -1,0 +1,7 @@
+package github.com/sjqtentacles/sml-lsp
+
+require {
+  github.com/sjqtentacles/sml-mlast
+  github.com/sjqtentacles/sml-fmt
+  github.com/sjqtentacles/sml-json
+}

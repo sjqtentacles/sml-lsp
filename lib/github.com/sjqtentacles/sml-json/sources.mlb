@@ -1,0 +1,10 @@
+(* Vendored sml-json: the vendored sml-parsec core plus the JSON AST/parser and
+ * serializers. parsec.mlb is brought in without a `local` wrapper so consumers
+ * can reference CharParsec alongside Json/JsonPretty. *)
+$(SML_LIB)/basis/basis.mlb
+
+../sml-parsec/parsec.mlb
+
+json.sig
+json.sml
+jsonPretty.sml

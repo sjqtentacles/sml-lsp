@@ -1,0 +1,10 @@
+(* MLB for sml-lsp: the vendored sml-fmt (which pulls in sml-mlast) and
+ * sml-json (which pulls in sml-parsec), then the LSP server. Each underlying
+ * source file is included exactly once. *)
+$(SML_LIB)/basis/basis.mlb
+
+../lib/github.com/sjqtentacles/sml-fmt/sources.mlb
+../lib/github.com/sjqtentacles/sml-json/sources.mlb
+
+lsp.sig
+lsp.sml

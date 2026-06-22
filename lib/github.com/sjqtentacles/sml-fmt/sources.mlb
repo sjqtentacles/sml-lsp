@@ -1,0 +1,8 @@
+(* Vendored sml-fmt: the formatter plus its sml-mlast dependency (loaded
+ * without a `local` wrapper so consumers see Parser/PpAst/Mlast and Format). *)
+$(SML_LIB)/basis/basis.mlb
+
+../sml-mlast/sources.mlb
+
+fmt.sig
+fmt.sml
