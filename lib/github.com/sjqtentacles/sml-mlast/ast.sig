@@ -9,12 +9,24 @@
    Identifiers are stored with their full (possibly qualified) spelling, e.g.
    "List.map". Numeric/char/string literals carry a normalised payload.
 
-   The datatypes are exposed transparently. *)
+   SOURCE POSITIONS (v2, breaking): the recursive node types that tooling needs
+   - expressions, patterns, declarations and specs - carry a source `span`.
+   The encoding wraps each as `<node> * span`: e.g. an `exp` is an `expnode`
+   paired with its span. This keeps the wrapping uniform so consumers strip a
+   span in exactly one mechanical place. Pretty-printing IGNORES spans, so the
+   round-trip / idempotence property is unchanged. `ty`, `strexp` and `sigexp`
+   are not (yet) positioned.
+
+   Spans are 0-based and end-exclusive (see Pos). The datatypes are exposed
+   transparently. *)
 
 signature AST =
 sig
   type tyvar = string
   type ident = string
+
+  type pos = Pos.pos      (* { line : int, col : int }, 0-based *)
+  type span = Pos.span    (* { lo : pos, hi : pos }, end-exclusive *)
 
   datatype lit =
       LInt of string
@@ -30,7 +42,8 @@ sig
     | TyArrow of ty * ty
     | TyRecord of (string * ty) list
 
-  datatype pat =
+  (* patterns: a `patnode` paired with its source span *)
+  datatype patnode =
       PWild
     | PVar of ident
     | PLit of lit
@@ -41,8 +54,11 @@ sig
     | PInfix of ident * pat * pat               (* infixed constructor, e.g. :: *)
     | PTyped of pat * ty
     | PAs of ident * pat
+  withtype pat = patnode * span
 
-  datatype exp =
+  (* expressions / declarations / specs carry spans; structures and signatures
+     do not (they are containers). All are mutually recursive. *)
+  datatype expnode =
       ELit of lit
     | EVar of ident
     | ETuple of exp list                  (* () is ETuple [] *)
@@ -63,7 +79,7 @@ sig
     | EFn of (pat * exp) list
     | ELet of dec list * exp
 
-  and dec =
+  and decnode =
       DVal of tyvar list * (pat * exp) list * bool      (* tyvars, binds, rec? *)
     | DFun of tyvar list
               * (ident * { pats : pat list, ret : ty option, body : exp } list) list
@@ -95,7 +111,7 @@ sig
     | SigId of ident
     | SigWhere of sigexp * (tyvar list * ident * ty) list   (* where type *)
 
-  and spec =
+  and specnode =
       SpecVal of (ident * ty) list
     | SpecType of (tyvar list * ident) list
     | SpecEqtype of (tyvar list * ident) list
@@ -106,6 +122,10 @@ sig
     | SpecStructure of (ident * sigexp) list
     | SpecInclude of sigexp
 
+  withtype exp = expnode * span
+  and dec = decnode * span
+  and spec = specnode * span
+
   (* convenience aliases for the inlined record shapes above *)
   type fclause = { pats : pat list, ret : ty option, body : exp }
   type datbind = { tyvars : tyvar list, name : ident,
@@ -114,4 +134,22 @@ sig
                    ascription : (bool * sigexp) option, body : strexp }
 
   type program = dec list
+
+  (* span accessors / constructors for the wrapped node types *)
+  val expSpan  : exp -> span
+  val patSpan  : pat -> span
+  val decSpan  : dec -> span
+  val specSpan : spec -> span
+
+  val expNode  : exp -> expnode
+  val patNode  : pat -> patnode
+  val decNode  : dec -> decnode
+  val specNode : spec -> specnode
+
+  (* erase all spans to a canonical zero, for span-insensitive AST equality *)
+  val eraseExp     : exp -> exp
+  val erasePat     : pat -> pat
+  val eraseDec     : dec -> dec
+  val eraseSpec    : spec -> spec
+  val eraseProgram : program -> program
 end

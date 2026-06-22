@@ -1,4 +1,8 @@
-(* ppast.sml - see ppast.sig *)
+(* ppast.sml - see ppast.sig.
+
+   Spans are IGNORED here: every wrapped node (exp/pat/dec/spec) is inspected
+   via its node projection, so the rendered text is identical to the
+   position-free v1 output and the parse->pp round trip stays idempotent. *)
 
 structure PpAst :> PPAST =
 struct
@@ -44,6 +48,7 @@ struct
       | LChar c => "#\"" ^ escStr c ^ "\""
       | LString s => "\"" ^ escStr s ^ "\""
 
+  (* atomicity tests operate on the bare node (span ignored) *)
   fun isAtomExp e =
     case e of
         ELit _ => true | EVar _ => true | ESelector _ => true
@@ -83,8 +88,8 @@ struct
   and tyArrLP t =
     case t of TyArrow _ => "(" ^ tyP t ^ ")" | _ => tyP t
 
-  and patP p =
-    case p of
+  and patP pw =
+    case patNode pw of
         PWild => "_"
       | PVar s => ppVar s
       | PLit l => fmtLit l
@@ -99,10 +104,10 @@ struct
       | PInfix (oper, l, r) => "(" ^ patP l ^ " " ^ oper ^ " " ^ patP r ^ ")"
       | PTyped (p, t) => "(" ^ patP p ^ " : " ^ tyP t ^ ")"
       | PAs (id, p) => id ^ " as " ^ patAtomP p
-  and patAtomP p = if isAtomPat p then patP p else "(" ^ patP p ^ ")"
+  and patAtomP pw = if isAtomPat (patNode pw) then patP pw else "(" ^ patP pw ^ ")"
 
-  and expP ind e =
-    case e of
+  and expP ind ew =
+    case expNode ew of
         ELit l => fmtLit l
       | EVar s => ppVar s
       | ESelector s => "#" ^ s
@@ -118,7 +123,7 @@ struct
       | ETyped (e, t) => "(" ^ expP ind e ^ " : " ^ tyP t ^ ")"
       | EAndalso (l, r) => "(" ^ expP ind l ^ " andalso " ^ expP ind r ^ ")"
       | EOrelse (l, r) => "(" ^ expP ind l ^ " orelse " ^ expP ind r ^ ")"
-      | EApp _ => appP ind e
+      | EApp _ => appP ind ew
       | ERaise e => "raise " ^ barP ind e
       | EIf (c, t, f) =>
           "if " ^ barP ind c ^ " then " ^ barP ind t ^ " else " ^ barP ind f
@@ -129,33 +134,34 @@ struct
       | ELet (ds, body) =>
           "let\n" ^ decsP (ind ^ "  ") ds ^ "\n" ^ ind ^ "in\n"
           ^ ind ^ "  " ^ expP (ind ^ "  ") body ^ "\n" ^ ind ^ "end"
-  and atomP ind e = if isAtomExp e then expP ind e else "(" ^ expP ind e ^ ")"
-  and barP ind e =
-    case e of
-        ECase _ => "(" ^ expP ind e ^ ")"
-      | EFn _ => "(" ^ expP ind e ^ ")"
-      | EHandle _ => "(" ^ expP ind e ^ ")"
-      | _ => expP ind e
-  and protP ind e =
-    case e of
-        EIf _ => "(" ^ expP ind e ^ ")"
-      | EWhile _ => "(" ^ expP ind e ^ ")"
-      | ECase _ => "(" ^ expP ind e ^ ")"
-      | EFn _ => "(" ^ expP ind e ^ ")"
-      | ERaise _ => "(" ^ expP ind e ^ ")"
-      | EHandle _ => "(" ^ expP ind e ^ ")"
-      | _ => expP ind e
-  and appP ind e =
-    case e of
+  and atomP ind ew = if isAtomExp (expNode ew) then expP ind ew
+                     else "(" ^ expP ind ew ^ ")"
+  and barP ind ew =
+    case expNode ew of
+        ECase _ => "(" ^ expP ind ew ^ ")"
+      | EFn _ => "(" ^ expP ind ew ^ ")"
+      | EHandle _ => "(" ^ expP ind ew ^ ")"
+      | _ => expP ind ew
+  and protP ind ew =
+    case expNode ew of
+        EIf _ => "(" ^ expP ind ew ^ ")"
+      | EWhile _ => "(" ^ expP ind ew ^ ")"
+      | ECase _ => "(" ^ expP ind ew ^ ")"
+      | EFn _ => "(" ^ expP ind ew ^ ")"
+      | ERaise _ => "(" ^ expP ind ew ^ ")"
+      | EHandle _ => "(" ^ expP ind ew ^ ")"
+      | _ => expP ind ew
+  and appP ind ew =
+    case expNode ew of
         EApp (f, x) => appP ind f ^ " " ^ atomP ind x
-      | _ => atomP ind e
+      | _ => atomP ind ew
   and matchP ind ms =
     String.concatWith " | "
       (List.map (fn (p, e) => patP p ^ " => " ^ barP ind e) ms)
 
   and decsP ind ds = String.concatWith "\n" (List.map (decP ind) ds)
-  and decP ind d =
-    case d of
+  and decP ind dw =
+    case decNode dw of
         DVal (tvs, binds, isRec) =>
           ind ^ "val " ^ (if isRec then "rec " else "") ^ tvseq tvs
           ^ String.concatWith ("\n" ^ ind ^ "and ")
@@ -239,8 +245,8 @@ struct
                 " where type " ^ tvseq tvs ^ nm ^ " = " ^ tyP t) binds)
 
   and specsP ind sps = String.concatWith "\n" (List.map (specP ind) sps)
-  and specP ind sp =
-    case sp of
+  and specP ind spw =
+    case specNode spw of
         SpecVal binds =>
           ind ^ "val " ^ String.concatWith " and "
             (List.map (fn (v, t) => v ^ " : " ^ tyP t) binds)

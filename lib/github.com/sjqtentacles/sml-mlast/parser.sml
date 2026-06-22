@@ -17,14 +17,37 @@ struct
       (":=", (3, LeftA)), ("o", (3, LeftA)),
       ("before", (0, LeftA)) ]
 
-  (* mutable parse state *)
+  (* mutable parse state: parallel token / span vectors + a cursor *)
   val toksRef = ref (Vector.fromList ([] : Token.token list))
+  val spansRef = ref (Vector.fromList ([] : Pos.span list))
   val posRef = ref 0
   val fixityRef = ref defaultFixity
 
   fun peek () = Vector.sub (!toksRef, !posRef) handle Subscript => Token.EOF
   fun peekN k = Vector.sub (!toksRef, !posRef + k) handle Subscript => Token.EOF
   fun adv () = posRef := !posRef + 1
+
+  (* span bookkeeping: clamp out-of-range indices to the ends of the vector *)
+  fun spanAt i =
+    let val m = Vector.length (!spansRef)
+    in if m = 0 then Pos.zero
+       else if i < 0 then Vector.sub (!spansRef, 0)
+       else if i >= m then Vector.sub (!spansRef, m - 1)
+       else Vector.sub (!spansRef, i)
+    end
+  fun curSpan () = spanAt (!posRef)
+  fun curLo () = #lo (curSpan ())
+  fun prevHi () = #hi (spanAt (!posRef - 1))
+
+  (* wrap a freshly built node: it spans from `lo` to the last consumed token *)
+  fun mk lo node = (node, { lo = lo, hi = prevHi () } : span)
+  (* extract the lo/span of an already-wrapped sub-node *)
+  fun spanOfW (_, sp) = sp
+  fun loOfW (_, (sp : span)) = #lo sp
+  (* span covering a non-empty list of wrapped sub-nodes *)
+  fun spanList ws =
+    { lo = loOfW (List.hd ws), hi = #hi (spanOfW (List.last ws)) } : span
+
   fun expect t =
     if peek () = t then adv ()
     else raise Parse ("expected " ^ Token.toString t ^ ", got "
@@ -81,44 +104,55 @@ struct
   (* ---- the recursive grammar ---- *)
 
   fun exp () =
+    let val lo = curLo () in
     case peek () of
-        Token.FN => (adv (); EFn (parseMatch ()))
+        Token.FN => (adv (); mk lo (EFn (parseMatch ())))
       | Token.CASE =>
           (adv ();
            let val e = exp ()
-           in expect Token.OF; ECase (e, parseMatch ()) end)
+           in expect Token.OF; mk lo (ECase (e, parseMatch ())) end)
       | Token.IF =>
           (adv ();
            let val c = exp ()
            in expect Token.THEN;
               let val t = exp ()
-              in expect Token.ELSE; EIf (c, t, exp ()) end
+              in expect Token.ELSE; mk lo (EIf (c, t, exp ())) end
            end)
       | Token.WHILE =>
           (adv ();
            let val c = exp ()
-           in expect Token.DO; EWhile (c, exp ()) end)
-      | Token.RAISE => (adv (); ERaise (exp ()))
+           in expect Token.DO; mk lo (EWhile (c, exp ())) end)
+      | Token.RAISE => (adv (); mk lo (ERaise (exp ())))
       | _ => expHandle ()
+    end
 
   and expHandle () =
     let val e = expOr ()
     in case peek () of
-           Token.HANDLE => (adv (); EHandle (e, parseMatch ()))
+           Token.HANDLE => (adv (); mk (loOfW e) (EHandle (e, parseMatch ())))
          | _ => e
     end
 
   and expOr () =
     let val e = expAnd ()
-    in case peek () of Token.ORELSE => (adv (); EOrelse (e, exp ())) | _ => e end
+    in case peek () of
+           Token.ORELSE => (adv (); mk (loOfW e) (EOrelse (e, exp ())))
+         | _ => e
+    end
 
   and expAnd () =
     let val e = expTyped ()
-    in case peek () of Token.ANDALSO => (adv (); EAndalso (e, exp ())) | _ => e end
+    in case peek () of
+           Token.ANDALSO => (adv (); mk (loOfW e) (EAndalso (e, exp ())))
+         | _ => e
+    end
 
   and expTyped () =
     let val e = infexp ()
-    in case peek () of Token.COLON => (adv (); ETyped (e, ty ())) | _ => e end
+    in case peek () of
+           Token.COLON => (adv (); mk (loOfW e) (ETyped (e, ty ())))
+         | _ => e
+    end
 
   and infexp () =
     let
@@ -133,7 +167,7 @@ struct
                      let
                        val nextMin = case assoc of LeftA => prec + 1 | RightA => prec
                        val right = climb nextMin
-                     in loop (EInfix (opid, left, right)) end)
+                     in loop (mk (loOfW left) (EInfix (opid, left, right))) end)
               | NONE => left
         in loop (appexp ()) end
     in climb 0 end
@@ -141,29 +175,32 @@ struct
   and appexp () =
     let
       fun loop e =
-        if atexpStarts (peek ()) then loop (EApp (e, atexp ())) else e
+        if atexpStarts (peek ())
+        then let val x = atexp () in loop (mk (loOfW e) (EApp (e, x))) end
+        else e
     in loop (atexp ()) end
 
   and atexp () =
+    let val lo = curLo () in
     case peek () of
-        Token.INT s => (adv (); ELit (LInt s))
-      | Token.WORD s => (adv (); ELit (LWord s))
-      | Token.REAL s => (adv (); ELit (LReal s))
-      | Token.STRING s => (adv (); ELit (LString s))
-      | Token.CHAR s => (adv (); ELit (LChar s))
-      | Token.ID s => (adv (); EVar s)
+        Token.INT s => (adv (); mk lo (ELit (LInt s)))
+      | Token.WORD s => (adv (); mk lo (ELit (LWord s)))
+      | Token.REAL s => (adv (); mk lo (ELit (LReal s)))
+      | Token.STRING s => (adv (); mk lo (ELit (LString s)))
+      | Token.CHAR s => (adv (); mk lo (ELit (LChar s)))
+      | Token.ID s => (adv (); mk lo (EVar s))
       | Token.OP =>
           (adv ();
            case peek () of
-               Token.ID s => (adv (); EVar s)
-             | Token.EQUALS => (adv (); EVar "=")
+               Token.ID s => (adv (); mk lo (EVar s))
+             | Token.EQUALS => (adv (); mk lo (EVar "="))
              | t => raise Parse ("expected identifier after op, got "
                                  ^ Token.toString t))
       | Token.HASH =>
           (adv ();
            case peek () of
-               Token.ID s => (adv (); ESelector s)
-             | Token.INT s => (adv (); ESelector s)
+               Token.ID s => (adv (); mk lo (ESelector s))
+             | Token.INT s => (adv (); mk lo (ESelector s))
              | t => raise Parse ("expected label after #, got "
                                  ^ Token.toString t))
       | Token.LET => parseLet ()
@@ -171,8 +208,10 @@ struct
       | Token.LBRACK => parseListExp ()
       | Token.LBRACE => parseRecordExp ()
       | t => raise Parse ("expected expression, got " ^ Token.toString t)
+    end
 
   and parseLet () =
+    let val lo = curLo () in
     (expect Token.LET;
      let val ds = parseDecs (fn t => t = Token.IN)
      in expect Token.IN;
@@ -182,15 +221,16 @@ struct
                 Token.SEMICOLON => (adv (); seqRest (exp () :: acc))
               | _ => List.rev acc
           val es = seqRest [exp ()]
-        in expect Token.END;
-           ELet (ds, case es of [e] => e | _ => ESeq es)
-        end
+          val body = case es of [e] => e | _ => (ESeq es, spanList es)
+        in expect Token.END; mk lo (ELet (ds, body)) end
      end)
+    end
 
   and parseParenExp () =
+    let val lo = curLo () in
     (expect Token.LPAREN;
      case peek () of
-         Token.RPAREN => (adv (); ETuple [])
+         Token.RPAREN => (adv (); mk lo (ETuple []))
        | _ =>
            let val e1 = exp ()
            in case peek () of
@@ -202,7 +242,7 @@ struct
                             Token.COMMA => (adv (); rest (exp () :: acc))
                           | _ => List.rev acc
                       val es = rest [e1]
-                    in expect Token.RPAREN; ETuple es end
+                    in expect Token.RPAREN; mk lo (ETuple es) end
                 | Token.SEMICOLON =>
                     let
                       fun rest acc =
@@ -210,14 +250,16 @@ struct
                             Token.SEMICOLON => (adv (); rest (exp () :: acc))
                           | _ => List.rev acc
                       val es = rest [e1]
-                    in expect Token.RPAREN; ESeq es end
+                    in expect Token.RPAREN; mk lo (ESeq es) end
                 | t => raise Parse ("expected ) , or ; got " ^ Token.toString t)
            end)
+    end
 
   and parseListExp () =
+    let val lo = curLo () in
     (expect Token.LBRACK;
      case peek () of
-         Token.RBRACK => (adv (); EList [])
+         Token.RBRACK => (adv (); mk lo (EList []))
        | _ =>
            let
              fun rest acc =
@@ -225,12 +267,14 @@ struct
                    Token.COMMA => (adv (); rest (exp () :: acc))
                  | _ => List.rev acc
              val es = rest [exp ()]
-           in expect Token.RBRACK; EList es end)
+           in expect Token.RBRACK; mk lo (EList es) end)
+    end
 
   and parseRecordExp () =
+    let val lo = curLo () in
     (expect Token.LBRACE;
      case peek () of
-         Token.RBRACE => (adv (); ERecord [])
+         Token.RBRACE => (adv (); mk lo (ERecord []))
        | _ =>
            let
              fun field () =
@@ -241,7 +285,8 @@ struct
                    Token.COMMA => (adv (); rest (field () :: acc))
                  | _ => List.rev acc
              val fs = rest [field ()]
-           in expect Token.RBRACE; ERecord fs end)
+           in expect Token.RBRACE; mk lo (ERecord fs) end)
+    end
 
   and parseLabel () =
     case peek () of
@@ -266,10 +311,10 @@ struct
   and pat () =
     let val p = patInfix ()
     in case peek () of
-           Token.COLON => (adv (); PTyped (p, ty ()))
+           Token.COLON => (adv (); mk (loOfW p) (PTyped (p, ty ())))
          | Token.AS =>
-             (case p of
-                  PVar id => (adv (); PAs (id, pat ()))
+             (case patNode p of
+                  PVar id => (adv (); mk (loOfW p) (PAs (id, pat ())))
                 | _ => raise Parse "as requires a variable")
          | _ => p
     end
@@ -290,7 +335,7 @@ struct
                               val nextMin =
                                 case assoc of LeftA => prec + 1 | RightA => prec
                               val right = climb nextMin
-                            in loop (PInfix (s, left, right)) end)
+                            in loop (mk (loOfW left) (PInfix (s, left, right))) end)
                      | NONE => left)
               | _ => left
         in loop (patApp ()) end
@@ -298,36 +343,41 @@ struct
 
   and patApp () =
     let val p = patAtom ()
-    in case p of
+    in case patNode p of
            PVar id =>
-             if patAtomStarts (peek ()) then PCon (id, patAtom ()) else p
+             if patAtomStarts (peek ())
+             then let val a = patAtom () in mk (loOfW p) (PCon (id, a)) end
+             else p
          | _ => p
     end
 
   and patAtom () =
+    let val lo = curLo () in
     case peek () of
-        Token.UNDERSCORE => (adv (); PWild)
-      | Token.ID s => (adv (); PVar s)
+        Token.UNDERSCORE => (adv (); mk lo PWild)
+      | Token.ID s => (adv (); mk lo (PVar s))
       | Token.OP =>
           (adv ();
            case peek () of
-               Token.ID s => (adv (); PVar s)
-             | Token.EQUALS => (adv (); PVar "=")
+               Token.ID s => (adv (); mk lo (PVar s))
+             | Token.EQUALS => (adv (); mk lo (PVar "="))
              | t => raise Parse ("expected id after op, got " ^ Token.toString t))
-      | Token.INT s => (adv (); PLit (LInt s))
-      | Token.WORD s => (adv (); PLit (LWord s))
-      | Token.REAL s => (adv (); PLit (LReal s))
-      | Token.STRING s => (adv (); PLit (LString s))
-      | Token.CHAR s => (adv (); PLit (LChar s))
+      | Token.INT s => (adv (); mk lo (PLit (LInt s)))
+      | Token.WORD s => (adv (); mk lo (PLit (LWord s)))
+      | Token.REAL s => (adv (); mk lo (PLit (LReal s)))
+      | Token.STRING s => (adv (); mk lo (PLit (LString s)))
+      | Token.CHAR s => (adv (); mk lo (PLit (LChar s)))
       | Token.LPAREN => parseParenPat ()
       | Token.LBRACK => parseListPat ()
       | Token.LBRACE => parseRecordPat ()
       | t => raise Parse ("expected pattern, got " ^ Token.toString t)
+    end
 
   and parseParenPat () =
+    let val lo = curLo () in
     (expect Token.LPAREN;
      case peek () of
-         Token.RPAREN => (adv (); PTuple [])
+         Token.RPAREN => (adv (); mk lo (PTuple []))
        | _ =>
            let val p1 = pat ()
            in case peek () of
@@ -339,15 +389,17 @@ struct
                             Token.COMMA => (adv (); rest (pat () :: acc))
                           | _ => List.rev acc
                       val ps = rest [p1]
-                    in expect Token.RPAREN; PTuple ps end
+                    in expect Token.RPAREN; mk lo (PTuple ps) end
                 | t => raise Parse ("expected ) or , in pattern, got "
                                     ^ Token.toString t)
            end)
+    end
 
   and parseListPat () =
+    let val lo = curLo () in
     (expect Token.LBRACK;
      case peek () of
-         Token.RBRACK => (adv (); PList [])
+         Token.RBRACK => (adv (); mk lo (PList []))
        | _ =>
            let
              fun rest acc =
@@ -355,13 +407,15 @@ struct
                    Token.COMMA => (adv (); rest (pat () :: acc))
                  | _ => List.rev acc
              val ps = rest [pat ()]
-           in expect Token.RBRACK; PList ps end)
+           in expect Token.RBRACK; mk lo (PList ps) end)
+    end
 
   and parseRecordPat () =
+    let val lo = curLo () in
     (expect Token.LBRACE;
      let
        fun finish (acc, flex) =
-         (expect Token.RBRACE; PRecord (List.rev acc, flex))
+         (expect Token.RBRACE; mk lo (PRecord (List.rev acc, flex)))
        fun fields (acc, flex) =
          case peek () of
              Token.RBRACE => finish (acc, flex)
@@ -371,14 +425,15 @@ struct
                  val lab = parseLabel ()
                  val p = case peek () of
                              Token.EQUALS => (adv (); pat ())
-                           | _ => PVar lab
+                           | _ => (PVar lab, spanAt (!posRef - 1))
                in case peek () of
                       Token.COMMA => (adv (); fields ((lab, p) :: acc, flex))
                     | _ => finish ((lab, p) :: acc, flex)
                end
      in fields ([], false) end)
+    end
 
-  (* ---- types ---- *)
+  (* ---- types (unpositioned) ---- *)
 
   and ty () = tyArrow ()
 
@@ -499,6 +554,7 @@ struct
       | t => raise Parse ("expected declaration, got " ^ Token.toString t)
 
   and parseVal () =
+    let val lo = curLo () in
     (expect Token.VAL;
      let
        val tvs = parseTyvarSeq ()
@@ -511,9 +567,11 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DVal (tvs, loop [], isRec) end)
+     in mk lo (DVal (tvs, loop [], isRec)) end)
+    end
 
   and parseFun () =
+    let val lo = curLo () in
     (expect Token.FUN;
      let
        val tvs = parseTyvarSeq ()
@@ -544,7 +602,8 @@ struct
                 Token.AND => (adv (); functions (fdef :: acc))
               | _ => List.rev (fdef :: acc)
          end
-     in DFun (tvs, functions []) end)
+     in mk lo (DFun (tvs, functions [])) end)
+    end
 
   and parseVid () =
     case peek () of
@@ -564,6 +623,7 @@ struct
                           ^ Token.toString t)
 
   and parseTypeDec () =
+    let val lo = curLo () in
     (expect Token.TYPE;
      let
        fun bind () =
@@ -577,7 +637,8 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DType (loop []) end)
+     in mk lo (DType (loop [])) end)
+    end
 
   and parseDatbinds () =
     let
@@ -605,6 +666,7 @@ struct
     in loop [] end
 
   and parseDatatype () =
+    let val lo = curLo () in
     (expect Token.DATATYPE;
      let
        val dbs = parseDatbinds ()
@@ -626,9 +688,11 @@ struct
                     end
                 in loop [] end)
            | _ => []
-     in DDatatype (dbs, withs) end)
+     in mk lo (DDatatype (dbs, withs)) end)
+    end
 
   and parseException () =
+    let val lo = curLo () in
     (expect Token.EXCEPTION;
      let
        fun eb () =
@@ -641,9 +705,11 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DException (loop []) end)
+     in mk lo (DException (loop [])) end)
+    end
 
   and parseOpen () =
+    let val lo = curLo () in
     (expect Token.OPEN;
      let
        fun loop acc =
@@ -651,18 +717,22 @@ struct
                        | _ => List.rev acc
        val ids = loop []
      in if null ids then raise Parse "open needs an identifier"
-        else DOpen ids
+        else mk lo (DOpen ids)
      end)
+    end
 
   and parseLocal () =
+    let val lo = curLo () in
     (expect Token.LOCAL;
      let val d1 = parseDecs (fn t => t = Token.IN)
      in expect Token.IN;
         let val d2 = parseDecs (fn t => t = Token.END)
-        in expect Token.END; DLocal (d1, d2) end
+        in expect Token.END; mk lo (DLocal (d1, d2)) end
      end)
+    end
 
   and parseInfix isRight =
+    let val lo = curLo () in
     (adv ();
      let
        val prec = case peek () of
@@ -676,9 +746,12 @@ struct
        val ids = loop []
        val assoc = if isRight then RightA else LeftA
        val () = List.app (fn id => addFixity (id, prec, assoc)) ids
-     in if isRight then DInfixr (prec, ids) else DInfix (prec, ids) end)
+     in if isRight then mk lo (DInfixr (prec, ids)) else mk lo (DInfix (prec, ids))
+     end)
+    end
 
   and parseNonfix () =
+    let val lo = curLo () in
     (expect Token.NONFIX;
      let
        fun loop acc =
@@ -688,9 +761,11 @@ struct
            | _ => List.rev acc
        val ids = loop []
        val () = List.app removeFixity ids
-     in DNonfix ids end)
+     in mk lo (DNonfix ids) end)
+    end
 
   and parseStructure () =
+    let val lo = curLo () in
     (expect Token.STRUCTURE;
      let
        fun bind () =
@@ -711,7 +786,8 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DStructure (loop []) end)
+     in mk lo (DStructure (loop [])) end)
+    end
 
   and strexp () =
     let
@@ -750,6 +826,7 @@ struct
     in loop (base ()) end
 
   and parseSignature () =
+    let val lo = curLo () in
     (expect Token.SIGNATURE;
      let
        fun bind () =
@@ -762,7 +839,8 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DSignature (loop []) end)
+     in mk lo (DSignature (loop [])) end)
+    end
 
   and sigexp () =
     let
@@ -796,6 +874,7 @@ struct
     in loop [] end
 
   and parseSpec () =
+    let val lo = curLo () in
     case peek () of
         Token.VAL =>
           (adv ();
@@ -808,7 +887,7 @@ struct
                in case peek () of Token.AND => (adv (); loop (b :: acc))
                                 | _ => List.rev (b :: acc)
                end
-           in SpecVal (loop []) end)
+           in mk lo (SpecVal (loop [])) end)
       | Token.TYPE =>
           (adv ();
            let
@@ -829,8 +908,8 @@ struct
              val allDef = List.all (fn (_, _, x) => Option.isSome x) bs
            in
              if allDef then
-               SpecTypeDef (List.map (fn (tv, n, x) => (tv, n, valOf x)) bs)
-             else SpecType (List.map (fn (tv, n, _) => (tv, n)) bs)
+               mk lo (SpecTypeDef (List.map (fn (tv, n, x) => (tv, n, valOf x)) bs))
+             else mk lo (SpecType (List.map (fn (tv, n, _) => (tv, n)) bs))
            end)
       | Token.EQTYPE =>
           (adv ();
@@ -842,8 +921,8 @@ struct
                in case peek () of Token.AND => (adv (); loop (b :: acc))
                                 | _ => List.rev (b :: acc)
                end
-           in SpecEqtype (loop []) end)
-      | Token.DATATYPE => (adv (); SpecDatatype (parseDatbinds ()))
+           in mk lo (SpecEqtype (loop [])) end)
+      | Token.DATATYPE => (adv (); mk lo (SpecDatatype (parseDatbinds ())))
       | Token.EXCEPTION =>
           (adv ();
            let
@@ -857,7 +936,7 @@ struct
                in case peek () of Token.AND => (adv (); loop (b :: acc))
                                 | _ => List.rev (b :: acc)
                end
-           in SpecException (loop []) end)
+           in mk lo (SpecException (loop [])) end)
       | Token.STRUCTURE =>
           (adv ();
            let
@@ -869,11 +948,13 @@ struct
                in case peek () of Token.AND => (adv (); loop (b :: acc))
                                 | _ => List.rev (b :: acc)
                end
-           in SpecStructure (loop []) end)
-      | Token.INCLUDE => (adv (); SpecInclude (sigexp ()))
+           in mk lo (SpecStructure (loop [])) end)
+      | Token.INCLUDE => (adv (); mk lo (SpecInclude (sigexp ())))
       | t => raise Parse ("expected specification, got " ^ Token.toString t)
+    end
 
   and parseFunctor () =
+    let val lo = curLo () in
     (expect Token.FUNCTOR;
      let
        fun bind () =
@@ -897,17 +978,20 @@ struct
          in case peek () of Token.AND => (adv (); loop (b :: acc))
                           | _ => List.rev (b :: acc)
          end
-     in DFunctor (loop []) end)
+     in mk lo (DFunctor (loop [])) end)
+    end
 
   (* ---- entry points ---- *)
 
-  fun reset tokens =
-    (toksRef := Vector.fromList tokens; posRef := 0;
+  fun reset ptokens =
+    (toksRef := Vector.fromList (List.map (fn (t, _) => t) ptokens);
+     spansRef := Vector.fromList (List.map (fn (_, sp) => sp) ptokens);
+     posRef := 0;
      fixityRef := defaultFixity)
 
-  fun parse tokens =
+  fun parse ptokens =
     let
-      val () = reset tokens
+      val () = reset ptokens
       val ds = parseDecs (fn _ => false)
     in case peek () of
            Token.EOF => ds

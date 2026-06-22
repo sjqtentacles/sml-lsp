@@ -3,6 +3,7 @@
 structure Lexer :> LEXER =
 struct
   exception Lex of string
+  type ptoken = Token.token * Pos.span
 
   fun isSym c = Char.contains "!%&$#+-/:<=>?@\\~`^|*" c
   fun isIdChar c = Char.isAlphaNum c orelse c = #"_" orelse c = #"'"
@@ -59,6 +60,33 @@ struct
       fun ch i = String.sub (s, i)
       fun readWhile (i, pred) =
         if has i andalso pred (ch i) then readWhile (i + 1, pred) else i
+
+      (* line-start offsets: lineStarts[k] is the char index at which (0-based)
+         line k begins. Used to map a char index to a {line, col} position. *)
+      val lineStarts =
+        let
+          fun go (i, acc) =
+            if i >= n then List.rev acc
+            else if ch i = #"\n" then go (i + 1, (i + 1) :: acc)
+            else go (i + 1, acc)
+        in Vector.fromList (0 :: go (0, [])) end
+      val numLines = Vector.length lineStarts
+
+      fun posOf idx =
+        let
+          (* largest k with lineStarts[k] <= idx (binary search) *)
+          fun bsearch (lo, hi) =
+            if lo >= hi then lo
+            else
+              let val mid = (lo + hi + 1) div 2
+              in if Vector.sub (lineStarts, mid) <= idx
+                 then bsearch (mid, hi)
+                 else bsearch (lo, mid - 1)
+              end
+          val line = bsearch (0, numLines - 1)
+        in { line = line, col = idx - Vector.sub (lineStarts, line) } : Pos.pos end
+
+      fun spanOf (a, b) = { lo = posOf a, hi = posOf b } : Pos.span
 
       fun skipComment (i, depth) =
         if depth = 0 then i
@@ -189,39 +217,40 @@ struct
           else (Token.ID name, e)
         end
 
+      (* emit a token with the span covering source range [lo, hi) *)
       fun loop (i, acc) =
-        if not (has i) then List.rev (Token.EOF :: acc)
+        if not (has i) then List.rev ((Token.EOF, spanOf (n, n)) :: acc)
         else
-          let val c = ch i in
+          let
+            val c = ch i
+            fun emit (t, j) = loop (j, (t, spanOf (i, j)) :: acc)
+          in
             if Char.isSpace c then loop (i + 1, acc)
             else if c = #"(" andalso has (i + 1) andalso ch (i + 1) = #"*"
               then loop (skipComment (i + 2, 1), acc)
-            else if c = #"(" then loop (i + 1, Token.LPAREN :: acc)
-            else if c = #")" then loop (i + 1, Token.RPAREN :: acc)
-            else if c = #"[" then loop (i + 1, Token.LBRACK :: acc)
-            else if c = #"]" then loop (i + 1, Token.RBRACK :: acc)
-            else if c = #"{" then loop (i + 1, Token.LBRACE :: acc)
-            else if c = #"}" then loop (i + 1, Token.RBRACE :: acc)
-            else if c = #"," then loop (i + 1, Token.COMMA :: acc)
-            else if c = #";" then loop (i + 1, Token.SEMICOLON :: acc)
-            else if c = #"_" then loop (i + 1, Token.UNDERSCORE :: acc)
+            else if c = #"(" then emit (Token.LPAREN, i + 1)
+            else if c = #")" then emit (Token.RPAREN, i + 1)
+            else if c = #"[" then emit (Token.LBRACK, i + 1)
+            else if c = #"]" then emit (Token.RBRACK, i + 1)
+            else if c = #"{" then emit (Token.LBRACE, i + 1)
+            else if c = #"}" then emit (Token.RBRACE, i + 1)
+            else if c = #"," then emit (Token.COMMA, i + 1)
+            else if c = #";" then emit (Token.SEMICOLON, i + 1)
+            else if c = #"_" then emit (Token.UNDERSCORE, i + 1)
             else if c = #"." then
               if has (i + 2) andalso ch (i + 1) = #"." andalso ch (i + 2) = #"."
-                then loop (i + 3, Token.DOTDOTDOT :: acc)
+                then emit (Token.DOTDOTDOT, i + 3)
                 else raise Lex "unexpected '.'"
-            else if c = #"\"" then
-              let val (t, j) = lexString (i + 1) in loop (j, t :: acc) end
+            else if c = #"\"" then emit (lexString (i + 1))
             else if c = #"#" andalso has (i + 1) andalso ch (i + 1) = #"\"" then
-              let val (t, j) = lexChar (i + 2) in loop (j, t :: acc) end
-            else if Char.isDigit c then
-              let val (t, j) = lexNumber i in loop (j, t :: acc) end
+              emit (lexChar (i + 2))
+            else if Char.isDigit c then emit (lexNumber i)
             else if c = #"~" andalso has (i + 1) andalso Char.isDigit (ch (i + 1)) then
-              let val (t, j) = lexNumber i in loop (j, t :: acc) end
+              emit (lexNumber i)
             else if c = #"'" then
               let val j = readWhile (i + 1, isIdChar)
-              in loop (j, Token.TYVAR (String.substring (s, i, j - i)) :: acc) end
-            else if Char.isAlpha c then
-              let val (t, j) = lexIdent i in loop (j, t :: acc) end
+              in emit (Token.TYVAR (String.substring (s, i, j - i)), j) end
+            else if Char.isAlpha c then emit (lexIdent i)
             else if isSym c then
               let
                 val j = readWhile (i, isSym)
@@ -235,8 +264,10 @@ struct
                           | "|" => Token.BAR
                           | "#" => Token.HASH
                           | _ => Token.ID sym
-              in loop (j, t :: acc) end
+              in emit (t, j) end
             else raise Lex ("illegal character: " ^ String.str c)
           end
     in loop (0, []) end
+
+  fun tokensOnly s = List.map (fn (t, _) => t) (tokenize s)
 end
