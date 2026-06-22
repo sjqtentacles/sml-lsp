@@ -1,5 +1,9 @@
 # sml-lsp
 
+> A pure Standard ML language server (LSP over JSON-RPC) for Standard ML.
+
+[![CI](https://github.com/sjqtentacles/sml-lsp/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-lsp/actions)
+
 A **Language Server Protocol** server for Standard ML, speaking JSON-RPC over
 stdio. The protocol logic is a **pure** function from an incoming JSON-RPC
 message to the serialized outgoing messages, so it is fully deterministic and
@@ -31,6 +35,20 @@ val initial   : state
 val handleMsg : state -> string -> state * string list  (* pure core *)
 val run       : state -> string list -> string list     (* fold a transcript *)
 val serve     : unit -> unit                             (* impure stdio loop *)
+```
+
+## Install (smlpkg)
+
+```sh
+smlpkg add github.com/sjqtentacles/sml-lsp
+```
+
+or add it to your package's `sml.pkg`:
+
+```
+require {
+  github.com/sjqtentacles/sml-lsp
+}
 ```
 
 ## Build & test
