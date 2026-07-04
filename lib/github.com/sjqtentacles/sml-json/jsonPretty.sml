@@ -44,7 +44,7 @@ struct
 
   fun quote s = "\"" ^ escapeString s ^ "\""
 
-  fun numStr (JInt n)  = fixSign (Int.toString n)
+  fun numStr (JInt n)  = fixSign (IntInf.toString n)
     | numStr (JReal r) = fixSign (Real.toString r)
     | numStr _ = raise Fail "numStr: not a number"
 

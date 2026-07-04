@@ -5,8 +5,8 @@ struct
   datatype json =
       JNull
     | JBool of bool
-    | JInt  of int     (* JSON number with no '.', 'e', or 'E' *)
-    | JReal of real    (* JSON number with a fraction/exponent *)
+    | JInt  of IntInf.int  (* JSON number with no '.', 'e', or 'E' (any size) *)
+    | JReal of real        (* JSON number with a fraction/exponent *)
     | JStr  of string
     | JArr  of json list
     | JObj  of (string * json) list
@@ -35,8 +35,13 @@ struct
      *   frac = "." DIGIT+
      *   exp  = ("e"|"E") ("+"|"-")? DIGIT+
      * We assemble the matched text, then hand an SML-syntax string (minus as
-     * `~`) to Int/Real.fromString. Correctness comes from the grammar above,
+     * `~`) to IntInf/Real.fromString. Correctness comes from the grammar above,
      * not from the lenient Basis readers. A '.', 'e' or 'E' => JReal, else JInt.
+     * Integers use `IntInf.fromString` (arbitrary precision): it never overflows,
+     * so a large literal parses losslessly and identically on MLton and Poly/ML
+     * instead of raising `Overflow` under MLton's fixed-width `int`. The `NONE`
+     * arms are unreachable given the grammar but are handled totally, so no
+     * unchecked `valOf` sits on the parse path.
      *)
     val nzDigit = sat (fn c => c >= #"1" andalso c <= #"9")
 
@@ -69,8 +74,12 @@ struct
                  val sml = smlSign sgn
                in
                  if fp = "" andalso ep = ""
-                 then return (JInt (valOf (Int.fromString (sml ^ ip))))
-                 else return (JReal (valOf (Real.fromString (sml ^ ip ^ fp ^ ep))))
+                 then (case IntInf.fromString (sml ^ ip) of
+                           SOME n => return (JInt n)
+                         | NONE => fail "invalid integer literal")
+                 else (case Real.fromString (sml ^ ip ^ fp ^ ep) of
+                           SOME r => return (JReal r)
+                         | NONE => fail "invalid number literal")
                end)))))
 
     (* JSON strings. We open the quote, read `many (escaped <|> normal)`, then an
@@ -134,4 +143,13 @@ struct
   in
     val parseJson : string -> json result = parse (delay value)
   end
+
+  (* Narrow a `JInt` to a machine `int`; `NONE` if it is not an integer or is
+     outside the portable signed 32-bit range. The bound is a fixed literal
+     (not this compiler's `Int` range) so the result is identical on MLton
+     (32-bit default `int`) and Poly/ML (63-bit): a value both can hold. *)
+  fun asInt (JInt n) =
+        if n >= ~2147483648 andalso n <= 2147483647
+        then SOME (IntInf.toInt n) else NONE
+    | asInt _ = NONE
 end

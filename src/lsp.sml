@@ -15,11 +15,18 @@ struct
     | jpath j (k :: ks) = (case jfield j k of SOME j2 => jpath j2 ks | NONE => NONE)
 
   fun getStr j path = case jpath j path of SOME (JStr s) => SOME s | _ => NONE
-  fun getInt j path = case jpath j path of SOME (JInt n) => SOME n | _ => NONE
+  (* JSON-RPC integers (ids, line/character, codes) fit a machine `int`, but the
+   * json AST now carries an arbitrary-precision `IntInf.int` (so oversized ids
+   * parse without overflowing MLton's fixed-width default `int`). Narrow with
+   * `Json.asInt`, which yields NONE for a non-integer or an out-of-`Int`-range
+   * value; the `int option` result type is unchanged. *)
+  fun getInt j path = Option.mapPartial Json.asInt (jpath j path)
   fun str path j = Option.getOpt (getStr j path, "")
   fun intp path j = Option.getOpt (getInt j path, 0)
 
-  fun jpos (l, c) = JObj [("line", JInt l), ("character", JInt c)]
+  (* LSP line/character are protocol ints; lift to the json AST's IntInf.int. *)
+  fun jpos (l, c) = JObj [("line", JInt (IntInf.fromInt l)),
+                          ("character", JInt (IntInf.fromInt c))]
   fun jrange (l1, c1, l2, c2) =
     JObj [("start", jpos (l1, c1)), ("end", jpos (l2, c2))]
 
@@ -185,7 +192,8 @@ struct
   fun errObj (idOpt, code, msg) =
     JObj [ ("jsonrpc", JStr "2.0"),
            ("id", Option.getOpt (idOpt, JNull)),
-           ("error", JObj [("code", JInt code), ("message", JStr msg)]) ]
+           ("error", JObj [("code", JInt (IntInf.fromInt code)),
+                           ("message", JStr msg)]) ]
 
   val capabilities =
     JObj [ ("capabilities",
@@ -222,7 +230,7 @@ struct
         | SOME text =>
             JArr (List.map (fn s =>
               JObj [ ("name", JStr (#name s)),
-                     ("kind", JInt (kindNum (#kind s))),
+                     ("kind", JInt (IntInf.fromInt (kindNum (#kind s)))),
                      ("location",
                       JObj [ ("uri", JStr uri),
                              ("range",
@@ -350,8 +358,15 @@ struct
               let val line = stripCR raw in
                 if line = "" then SOME len
                 else if String.isPrefix "Content-Length:" line then
-                  readHeaders (Int.fromString
-                                 (String.extract (line, 15, NONE)))
+                  (* Parse the length via `IntInf` and bound to the portable
+                     signed-32-bit range, so an oversized Content-Length yields
+                     NONE identically on both compilers rather than raising
+                     `Overflow` under MLton's 32-bit `int`. *)
+                  readHeaders (case IntInf.fromString
+                                        (String.extract (line, 15, NONE)) of
+                                   SOME n => if n >= 0 andalso n <= 2147483647
+                                             then SOME (IntInf.toInt n) else NONE
+                                 | NONE => NONE)
                 else readHeaders len
               end
       fun emit out =

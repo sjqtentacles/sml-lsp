@@ -60,9 +60,15 @@ make all-tests   # both compilers
 make example     # run a sample transcript through the server core
 ```
 
-Both compilers report `13 passed, 0 failed` with byte-identical output. The
+Both compilers report `16 passed, 0 failed` with byte-identical output. The
 suite pins golden JSON-RPC responses for the lifecycle, diagnostics,
 documentSymbol, hover, go-to-definition, formatting, and error handling.
+
+JSON-RPC integer ids and positions are carried through the vendored `sml-json`
+AST as arbitrary-precision `IntInf.int`, so an id past 2^31 (e.g. a millisecond
+epoch stamp) round-trips losslessly and byte-identically under both MLton
+(fixed-width default `int`) and Poly/ML (63-bit `int`) instead of overflowing
+MLton's `int` at parse time.
 
 ## Example
 

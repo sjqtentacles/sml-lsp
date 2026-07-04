@@ -76,6 +76,35 @@ struct
   val unknownResp =
     "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"method not found: textDocument/rename\"}}"
 
+  (* Boundary: a JSON-RPC id larger than 2^31 (1_700_000_000_000, a ms epoch
+     stamp). The json AST now stores it as an arbitrary-precision IntInf.int, so
+     it parses losslessly and echoes back byte-for-byte -- MLton's fixed-width
+     default int (32-bit) would have overflowed at parse under the old JInt of
+     int. Poly/ML's 63-bit int would have survived, so this also guards the two
+     compilers staying identical. The id is preserved verbatim in the response. *)
+  val bigIdReq =
+    "{\"jsonrpc\":\"2.0\",\"id\":1700000000000,\"method\":\"initialize\",\"params\":{}}"
+  val bigIdResp =
+    "{\"jsonrpc\":\"2.0\",\"id\":1700000000000,\"result\":{\"capabilities\":{\"textDocumentSync\":1,\"documentSymbolProvider\":true,\"hoverProvider\":true,\"definitionProvider\":true,\"documentFormattingProvider\":true},\"serverInfo\":{\"name\":\"sml-lsp\",\"version\":\"0.1.0\"}}}"
+
+  (* An unknown-method request with a huge id round-trips the id through errObj
+     the same way (id echoed verbatim; code narrowed via IntInf). *)
+  val bigIdUnknownReq =
+    "{\"jsonrpc\":\"2.0\",\"id\":1700000000000,\"method\":\"textDocument/rename\",\"params\":{}}"
+  val bigIdUnknownResp =
+    "{\"jsonrpc\":\"2.0\",\"id\":1700000000000,\"error\":{\"code\":-32601,\"message\":\"method not found: textDocument/rename\"}}"
+
+  (* getInt narrowing on a request field: a position whose `line` is > 2^31.
+     Json.asInt narrows the IntInf payload; on MLton's fixed-width default int
+     (32-bit) it is out of range, so intp falls back to its default (0); on
+     Poly/ML's 63-bit int it narrows to 1700000000000. Either way the request is
+     handled totally -- no `Overflow` escapes at the pattern-match on JInt (the
+     pre-fix hazard) -- and the reply is a well-formed hover response echoing the
+     id. (The narrowed value differs per compiler here, so we assert the shape,
+     not a golden body.) *)
+  val bigLineHoverReq =
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"" ^ uri ^ "\"},\"position\":{\"line\":1700000000000,\"character\":0}}}"
+
   fun runAll () =
     let
       val st = openState ()
@@ -116,6 +145,16 @@ struct
       val () = check "unknown notification -> silent"
                  (#2 (Lsp.handleMsg Lsp.initial
                         "{\"jsonrpc\":\"2.0\",\"method\":\"$/foo\",\"params\":{}}") = [])
+
+      val () = section "large integers (boundary)"
+      val () = checkGolden "id > 2^31 round-trips in result"
+                 (out1 Lsp.initial bigIdReq, bigIdResp)
+      val () = checkGolden "id > 2^31 round-trips in error"
+                 (out1 Lsp.initial bigIdUnknownReq, bigIdUnknownResp)
+      val () = check "huge position line handled, no overflow"
+                 (let val res = out1 st bigLineHoverReq
+                  in has "\"jsonrpc\":\"2.0\"" res andalso has "\"id\":8" res
+                     andalso has "\"result\"" res end)
 
       val () = section "full transcript"
       val () = check "run folds outputs in order"
