@@ -44,8 +44,24 @@ struct
 
   fun quote s = "\"" ^ escapeString s ^ "\""
 
+  (* Deterministic JSON real formatting. Real.toString differs between MLton
+   * and Poly/ML (e.g. "30" vs "30.0"), so reals print as either
+   *   <integer>.0            for integral values below 1e15, or
+   *   fixed 17-significant-digit scientific notation otherwise,
+   * both of which the compilers render byte-identically. Special values
+   * (nan/inf) have no JSON representation and serialize as null, matching
+   * common JSON encoders. *)
+  fun realStr r =
+      if not (Real.isFinite r) then "null"
+      else if Real.== (Real.realTrunc r, r) andalso Real.abs r < 1E15
+      then fixSign (LargeInt.toString (Real.toLargeInt IEEEReal.TO_NEAREST r)) ^ ".0"
+      else
+        String.translate
+          (fn #"~" => "-" | #"E" => "e" | c => String.str c)
+          (Real.fmt (StringCvt.SCI (SOME 16)) r)
+
   fun numStr (JInt n)  = fixSign (IntInf.toString n)
-    | numStr (JReal r) = fixSign (Real.toString r)
+    | numStr (JReal r) = realStr r
     | numStr _ = raise Fail "numStr: not a number"
 
   (* ---- minified ---- *)
